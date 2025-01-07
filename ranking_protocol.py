@@ -1,18 +1,21 @@
-from nintendo.nex import rmc, ranking, common
-from pymongo.collection import Collection
-import datetime
+import functools
+from datetime import datetime, timezone
+from typing import Callable
+
 import bson
 import pymongo
-import redis
-from typing import Callable
-import functools
+from nintendo.nex import rmc, ranking, common
+from pymongo.collection import Collection
+
+from nex_protocols_common_py.context import Context
 
 
 class RankingManager:
-    def __init__(self, rankings_db: Collection, commondatadb: Collection, redis_db: redis.client.Redis):
-        self.rankings_db = rankings_db
-        self.redis_db = redis_db
-        self.commondata_db = commondatadb
+    def __init__(self, context: Context):
+        self.context = context
+        self.rankings_db = context.database["rankings"]
+        self.redis_db = context.redis_client
+        self.commondata_db = context.database["commondata"]
 
         self.rankings_db.create_index([("pid", pymongo.ASCENDING), ("category", pymongo.ASCENDING)])
 
@@ -37,13 +40,15 @@ class RankingManager:
             return sum
         """)
 
-    def get_redis_member_name(self, category: int, unique: bool = False):
+    @staticmethod
+    def get_redis_member_name(category: int, unique: bool = False):
         if unique:
             return "leaderboard_unique:%d" % category
         else:
             return "leaderboard:%d" % category
 
-    def revert_original_object_id_order(target: list, orig: list, desc: bool = False):
+    @staticmethod
+    def revert_original_object_id_order(target: list, orig: list):
         def sort_lambda(a, b):
             a_idx = orig.index(a["_id"])
             b_idx = orig.index(b["_id"])
@@ -58,9 +63,11 @@ class RankingManager:
         target.sort(key=functools.cmp_to_key(sort_lambda))
 
     def get_standard_rank_by_score(self, category: int, score: int, desc: bool = False):
-        return self.standard_rank_by_score_script([self.get_redis_member_name(category, True)], ['REV' if desc else '', score]) + 1
+        return self.standard_rank_by_score_script([self.get_redis_member_name(category, True)],
+                                                  ['REV' if desc else '', score]) + 1
 
-    def set_score(self, client: rmc.RMCClient, score_data: ranking.RankingScoreData, unique_id: int, replace_all: bool = True):
+    def set_score(self, client: rmc.RMCClient, score_data: ranking.RankingScoreData, unique_id: int,
+                  replace_all: bool = True):
         """Insert a user score in the database (MongoDB and Redis)
 
         Args:
@@ -72,7 +79,11 @@ class RankingManager:
 
         self.set_score_for_pid(client.pid(), score_data, unique_id, replace_all)
 
-    def set_score_for_pid(self, pid: int, score_data: ranking.RankingScoreData, unique_id: int, replace_all: bool = True):
+    def set_score_for_pid(self,
+                          pid: int,
+                          score_data: ranking.RankingScoreData,
+                          unique_id: int,
+                          replace_all: bool = True):
         """Insert a user score in the database based on PID (MongoDB and Redis)
 
         Args:
@@ -90,11 +101,12 @@ class RankingManager:
             "category": score_data.category,
             "score": score_data.score,
             "groups": score_data.groups,
-            "insert_time": datetime.datetime.utcnow()
+            "insert_time": datetime.now(timezone.utc)
         })
 
         pipeline = self.redis_db.pipeline()
-        pipeline.zadd(self.get_redis_member_name(score_data.category), {str(insert_result.inserted_id): score_data.score})
+        pipeline.zadd(self.get_redis_member_name(score_data.category),
+                      {str(insert_result.inserted_id): score_data.score})
         pipeline.zadd(self.get_redis_member_name(score_data.category, True), {str(score_data.score): 1}, incr=True)
 
         pipeline.execute()
@@ -186,7 +198,15 @@ class RankingManager:
 
     """
 
-    def get_scores_by_range_standard(self, category: int, offset: int, count: int, desc: bool = False, additional_query: dict = {}) -> list[dict]:
+    def get_scores_by_range(self,
+                            category: int,
+                            offset: int,
+                            count: int,
+                            desc: bool = False,
+                            additional_query=None):
+        if additional_query is None:
+            additional_query = {}
+
         leaders = self.redis_db.zrange(self.get_redis_member_name(category), offset, offset + count - 1, desc)
         oid_list = list(map(lambda x: bson.ObjectId(x.decode()), leaders))
 
@@ -194,7 +214,18 @@ class RankingManager:
         query.update(additional_query)
 
         score_list = self.get_scores_document_by_query(query, desc)
-        RankingManager.revert_original_object_id_order(score_list, oid_list, desc)
+        RankingManager.revert_original_object_id_order(score_list, oid_list)
+
+        return score_list
+
+    def get_scores_by_range_standard(self,
+                                     category: int,
+                                     offset: int,
+                                     count: int,
+                                     desc: bool = False,
+                                     additional_query=None) -> list[dict]:
+
+        score_list = self.get_scores_by_range(category, offset, count, desc, additional_query)
 
         res = []
         if len(score_list) > 0:
@@ -213,16 +244,14 @@ class RankingManager:
 
         return res
 
-    def get_scores_by_range_ordinal(self, category: int, offset: int, count: int, desc: bool = False, additional_query: dict = {}) -> list[dict]:
+    def get_scores_by_range_ordinal(self,
+                                    category: int,
+                                    offset: int,
+                                    count: int,
+                                    desc: bool = False,
+                                    additional_query=None) -> list[dict]:
 
-        leaders = self.redis_db.zrange(self.get_redis_member_name(category), offset, offset + count - 1, desc)
-        oid_list = list(map(lambda x: bson.ObjectId(x.decode()), leaders))
-
-        query = {"_id": {"$in": oid_list}}
-        query.update(additional_query)
-
-        score_list = self.get_scores_document_by_query(query, desc)
-        RankingManager.revert_original_object_id_order(score_list, oid_list, desc)
+        score_list = self.get_scores_by_range(category, offset, count, desc, additional_query)
 
         res = []
         for i in range(len(score_list)):
@@ -230,7 +259,14 @@ class RankingManager:
 
         return res
 
-    def get_top_score_for_pid_standard(self, pid: int, category: int, desc: bool, additional_query: dict = {}) -> list[dict]:
+    def get_top_score_for_pid_standard(self,
+                                       pid: int,
+                                       category: int,
+                                       desc: bool,
+                                       additional_query=None) -> list[dict]:
+
+        if additional_query is None:
+            additional_query = {}
 
         query = {"pid": pid, "category": category}
         query.update(additional_query)
@@ -241,7 +277,14 @@ class RankingManager:
 
         return []
 
-    def get_top_score_for_pid_ordinal(self, pid: int, category: int, desc: bool, additional_query: dict = {}) -> list[dict]:
+    def get_top_score_for_pid_ordinal(self,
+                                      pid: int,
+                                      category: int,
+                                      desc: bool,
+                                      additional_query=None) -> list[dict]:
+
+        if additional_query is None:
+            additional_query = {}
 
         query = {"pid": pid, "category": category}
         query.update(additional_query)
@@ -257,7 +300,15 @@ class RankingManager:
 
         return []
 
-    def get_scores_around_user_standard(self, pid: int, category: int, num: int, desc: bool = False, additional_query: dict = {}) -> list[dict]:
+    def get_scores_around_user_standard(self,
+                                        pid: int,
+                                        category: int,
+                                        num: int,
+                                        desc: bool = False,
+                                        additional_query=None) -> list[dict]:
+        if additional_query is None:
+            additional_query = {}
+
         res = []
         best_score = self.get_top_score_for_pid_ordinal(pid, category, desc, additional_query)
         if best_score:
@@ -286,7 +337,15 @@ class RankingManager:
 
         return res
 
-    def get_scores_around_user_ordinal(self, pid: int, category: int, num: int, desc: bool = False, additional_query: dict = {}) -> list[dict]:
+    def get_scores_around_user_ordinal(self,
+                                       pid: int,
+                                       category: int,
+                                       num: int,
+                                       desc: bool = False,
+                                       additional_query=None) -> list[dict]:
+        if additional_query is None:
+            additional_query = {}
+
         best_score = self.get_top_score_for_pid_ordinal(pid, category, desc, additional_query)
         if best_score:
 
@@ -302,27 +361,25 @@ class RankingManager:
 
 class CommonRankingServer(ranking.RankingServer):
     def __init__(self,
-                 settings,
-                 rankings_db: Collection,
-                 redis_instance: redis.client.Redis,
-                 commondata_db: Collection,
+                 context: Context,
                  common_data_handler: Callable[[Collection, int, bytes, int], bool],
                  rankings_category: dict[int, bool]):
         super().__init__()
-        self.settings = settings
+        self.context = Context
 
-        self.rankings_db = rankings_db
-        self.redis_instance = redis_instance
-        self.commondata_db = commondata_db
+        self.rankings_db = context.database["rankings"]
+        self.commondata_db = context.database["commondata"]
+        self.redis_instance = context.redis_client
         self.common_data_handler = common_data_handler
         self.rankings_category = rankings_category
 
-        self.ranking_mgr = RankingManager(self.rankings_db, self.commondata_db, self.redis_instance)
+        self.ranking_mgr = RankingManager(context)
 
     # ============= Utility functions  =============
 
     # Implement and Raise a RMCError if the score is invalid.
-    def validate_ranking_score(self, client, score_data: ranking.RankingScoreData, unique_id: int) -> bool:
+    @staticmethod
+    def validate_ranking_score(client, score_data: ranking.RankingScoreData, unique_id: int) -> bool:
         return True
 
     def is_category_ordered_desc(self, category: int) -> bool:
@@ -336,7 +393,7 @@ class CommonRankingServer(ranking.RankingServer):
             "data": bson.Binary(data),
             "size": len(data),
             "unique_id": unique_id,
-            "last_update": datetime.datetime.utcnow()
+            "last_update": datetime.now(timezone.utc)
         }, upsert=True)
 
     # ============= Method implementations  =============
@@ -345,7 +402,8 @@ class CommonRankingServer(ranking.RankingServer):
         self.validate_ranking_score(client, score_data, unique_id)
         self.ranking_mgr.set_score(client, score_data, unique_id, score_data.update_mode == 1)
 
-    async def get_ranking(self, client, mode: ranking.RankingMode, category: int, order: ranking.RankingOrderParam, unique_id, pid) -> ranking.RankingResult:
+    async def get_ranking(self, client, mode: ranking.RankingMode, category: int, order: ranking.RankingOrderParam,
+                          unique_id, pid) -> ranking.RankingResult:
 
         if order.count > 1000:
             raise common.RMCError("Core::InvalidArgument")
@@ -392,7 +450,7 @@ class CommonRankingServer(ranking.RankingServer):
             rk_data.groups = score_data["groups"]
             rk_data.param = 0
             rk_data.common_data = score_data["data"]
-            rk_data.update_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(score_data["insert_time"]))
+            rk_data.update_time = common.DateTime.fromtimestamp(datetime.timestamp(score_data["insert_time"]))
             res.data.append(rk_data)
 
         return res
@@ -402,5 +460,6 @@ class CommonRankingServer(ranking.RankingServer):
         if len(common_data) > 0x200:
             raise common.RMCError("Ranking::InvalidDataSize")
 
-        if (not self.common_data_handler) or not self.common_data_handler(self.commondata_db, client.pid(), common_data, unique_id):
+        if (not self.common_data_handler) or not self.common_data_handler(self.commondata_db, client.pid(), common_data,
+                                                                          unique_id):
             self.store_common_data_for_pid(client.pid(), common_data, unique_id)

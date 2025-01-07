@@ -1,18 +1,17 @@
 from nintendo.nex import rmc, nattraversal, common, streams
-from pymongo.collection import Collection
 
-from .secure_connection_protocol import CommonSecureConnectionServer
+from context import Context
+from secure_connection_protocol import CommonSecureConnectionServer
 
 
 class CommonNATTraversalServer(nattraversal.NATTraversalServer):
     def __init__(self,
-                 settings,
-                 sessions_db: Collection,
+                 context: Context,
                  secure_connection_server: CommonSecureConnectionServer):
         super().__init__()
-        self.settings = settings
+        self.context = context
 
-        self.sessions_db = sessions_db
+        self.sessions_db = context.database["sessions"]
         self.secure_connection_server = secure_connection_server
 
     # ============= Utility functions  =============
@@ -38,10 +37,10 @@ class CommonNATTraversalServer(nattraversal.NATTraversalServer):
         for url in target_urls:
             target_client = self.secure_connection_server.get_client_by_cid(url["RVCID"])
             if target_client:
-                stream = streams.StreamOut(self.settings)
+                stream = streams.StreamOut(self.context.settings)
                 stream.stationurl(station_to_probe)
                 message = rmc.RMCMessage.request(
-                    self.settings,
+                    self.context.settings,
                     self.PROTOCOL_ID,
                     self.METHOD_INITIATE_PROBE,
                     0xffff0000 + client.call_id,

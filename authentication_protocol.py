@@ -1,46 +1,37 @@
-from nintendo.nex import rmc, kerberos, authentication, common
 import secrets
-import datetime
+from datetime import datetime, timezone
 from typing import Callable
 
+from nintendo.nex import rmc, kerberos, authentication, common
 
-class AuthenticationUser:
-    def __init__(self, pid, name, password):
-        self.pid = pid
-        self.name = name
-        self.password = password
+from nex_protocols_common_py.context import Context, AuthenticationUser
 
 
 class CommonAuthenticationServer(authentication.AuthenticationServer):
     def __init__(self,
-                 settings,
-                 secure_host: str,
-                 secure_port: int,
+                 context: Context,
                  build_string: str,
-                 special_users: list[AuthenticationUser],
                  get_nex_password_func: Callable[[int], str],
                  auth_callback: Callable[[AuthenticationUser], common.Result] = None):
 
         super().__init__()
-        self.settings = settings
 
-        self.special_users = special_users
-        self.secure_host = secure_host
-        self.secure_port = secure_port
+        self.context = context
         self.build_string = build_string
         self.get_nex_password_func = get_nex_password_func
         self.auth_callback = auth_callback
 
     # ============= Utility functions  =============
 
-    def derive_key(self, user: AuthenticationUser):
+    @staticmethod
+    def derive_key(user: AuthenticationUser):
         deriv = kerberos.KeyDerivationOld(65000, 1024)
         return deriv.derive_key(user.password.encode("ascii"), user.pid)
 
     def generate_ticket(self, source: AuthenticationUser, target: AuthenticationUser):
         user_key = self.derive_key(source)
         server_key = self.derive_key(target)
-        session_key = secrets.token_bytes(self.settings["kerberos.key_size"])
+        session_key = secrets.token_bytes(self.context.settings["kerberos.key_size"])
 
         internal = kerberos.ServerTicket()
         internal.timestamp = common.DateTime.now()
@@ -50,12 +41,12 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
         ticket = kerberos.ClientTicket()
         ticket.session_key = session_key
         ticket.target = target.pid
-        ticket.internal = internal.encrypt(server_key, self.settings)
+        ticket.internal = internal.encrypt(server_key, self.context.settings)
 
-        return ticket.encrypt(user_key, self.settings)
+        return ticket.encrypt(user_key, self.context.settings)
 
     def get_special_user(self, pid: int):
-        for u in self.special_users:
+        for u in self.context.special_users:
             if u.pid == pid:
                 return u
 
@@ -77,7 +68,6 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
 
         server = self.get_special_user(2)  # Special user: Quazal Rendez-Vous
         if not server:
-            print("No special users with PID 2 ... fix this please!")
             raise common.RMCError("Core::NotImplemented")
 
         error = common.Result.success()
@@ -86,7 +76,9 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
             error.raise_if_error()
 
         url = common.StationURL(
-            scheme="prudps", address=self.secure_host, port=self.secure_port,
+            scheme="prudps",
+            address=self.context.server_info.secure_host,
+            port=self.context.server_info.secure_port,
             PID=server.pid, CID=1, type=2,
             sid=1, stream=10
         )
@@ -95,7 +87,7 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
         conn_data.main_station = url
         conn_data.special_protocols = []
         conn_data.special_station = common.StationURL()
-        conn_data.server_time = common.DateTime.fromtimestamp(datetime.datetime.utcnow().timestamp())
+        conn_data.server_time = common.DateTime.fromtimestamp(datetime.now(timezone.utc).timestamp())
 
         response = rmc.RMCResponse()
         response.result = error
@@ -115,7 +107,6 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
 
         server = self.get_special_user(pid=2)  # Special user: Quazal Rendez-Vous
         if not server:
-            print("No special users with PID 2 ... fix this please!")
             raise common.RMCError("Core::NotImplemented")
 
         error = common.Result.success()
@@ -123,7 +114,9 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
             error = self.auth_callback(user)
 
         url = common.StationURL(
-            scheme="prudps", address=self.secure_host, port=self.secure_port,
+            scheme="prudps",
+            address=self.context.server_info.secure_host,
+            port=self.context.server_info.secure_port,
             PID=server.pid, CID=1, type=2,
             sid=1, stream=10
         )
@@ -132,7 +125,7 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
         conn_data.main_station = url
         conn_data.special_protocols = []
         conn_data.special_station = common.StationURL()
-        conn_data.server_time = common.DateTime.fromtimestamp(datetime.datetime.utcnow().timestamp())
+        conn_data.server_time = common.DateTime.fromtimestamp(datetime.now(timezone.utc).timestamp())
 
         response = rmc.RMCResponse()
         response.result = error

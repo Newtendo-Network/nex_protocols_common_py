@@ -4,11 +4,11 @@
 
 # Usage
 
-You may need:
+You will need:
 
-- S3 instance (MinIO)
+- S3 instance (MinIO is recommended), for DataStore
 - MongoDB server 6.0+
-- Redis server 7.0+
+- Redis server 7.0+, for Rankings
 
 Install Python3 and these libs:
 
@@ -49,8 +49,10 @@ Example usage:
 account_grpc_client = grpc.insecure_channel('%s:%d' % ("localhost", 50051))
 account_service = account_service_pb2_grpc.AccountStub(account_grpc_client)
 
-SecureServerUser = AuthenticationUser(2, "Quazal Rendez-Vous", "EPIC_SECURE_AUTH_PASS") # make the password actually secure
+SecureServerUser = AuthenticationUser(2, "Quazal Rendez-Vous",
+                                      "EPIC_SECURE_AUTH_PASS")  # make the password actually secure
 GuestUser = AuthenticationUser(100, "guest", "MMQea3n!fsik")
+
 
 def example_get_nex_password(pid: int) -> str:
     response = account_service.GetNEXPassword(GetNEXPasswordRequest(pid=pid), metadata=[("x-api-key", "GRPC_API_KEY")])
@@ -62,14 +64,16 @@ def example_auth_callback(auth_user: AuthenticationUser) -> common.Result:
         return common.Result.error("Authentication::UnderMaintenance")
     return common.Result.success()
 
+
 AuthenticationServer = CommonAuthenticationServer(
     NEX_SETTINGS,
-    secure_host="124.124.56.111", # Your external IPv4 address
-    secure_port=1224, # Secure server is open on port 1224
-    build_string="Example-BUILD-string-22cef", # Build string
-    special_users=[SecureServerUser, GuestUser], # You can remove the Guest user
-    get_nex_password_func=example_get_nex_password, # Callback: The function that will fetch user NEX passwords
-    auth_callback=example_auth_callback # Callback: The function that will be called on each login attempt (you can raise RMC exceptions)
+    secure_host="124.124.56.111",  # Your external IPv4 address
+    secure_port=1224,  # Secure server is open on port 1224
+    build_string="Example-BUILD-string-22cef",  # Build string
+    special_users=[SecureServerUser, GuestUser],  # You can remove the Guest user
+    get_nex_password_func=example_get_nex_password,  # Callback: The function that will fetch user NEX passwords
+    auth_callback=example_auth_callback
+    # Callback: The function that will be called on each login attempt (you can raise RMC exceptions)
 )
 ```
 
@@ -82,8 +86,8 @@ Example usage:
 ```py
 SecureConnectionServer = CommonSecureConnectionServer(
     NEX_SETTINGS,
-    sessions_db=session_collection, # The MongoDB collection that will store user session URLs
-    reportdata_db=reportdata_collection # The MongoDB collection that will store secure report data (unused yet)
+    sessions_db=session_collection,  # The MongoDB collection that will store user session URLs
+    reportdata_db=reportdata_collection  # The MongoDB collection that will store secure report data (unused yet)
 )
 ```
 
@@ -104,8 +108,9 @@ RankingServer = CommonRankingServer(
     rankings_db=ranking_scores_collection,
     redis_instance=redis_client,
     commondata_db=ranking_commondata_collection,
-    common_data_handler=None, # Optional, look MK8 to see how it can be used
-    rankings_category={} # Ranking categories if you want some of them to be Ascending, other descending (dict[int, int])
+    common_data_handler=None,  # Optional, look MK8 to see how it can be used
+    rankings_category={}
+    # Ranking categories if you want some of them to be Ascending, other descending (dict[int, int])
 )                          
 ```
 
@@ -160,7 +165,7 @@ MatchmakingServer = CommonMatchMakingServer(
     NEX_SETTINGS,
     gatherings_db=gatherings_collection,
     sessions_db=session_collection,
-    sequence_db=sequence_collection                                            
+    sequence_db=sequence_collection
 )
 ```
 
@@ -178,11 +183,13 @@ s3_client = Minio(endpoint="s3.endpoint.change.to.yourendpoint",
                   secure=True,
                   credentials=StaticProvider("s3_access_key", "s3_secret", ""))
 
+
 def example_calculate_s3_object_key_ex(database, pid, persistence_id: int, object_id: int) -> str:
     if persistence_id < 1024:
         return "ghosts/%d/%d.bin" % (pid, persistence_id)
     else:
         return "mktv/%d.bin" % (object_id)
+
 
 def example_calculate_s3_object_key(database, client, persistence_id: int, object_id: int) -> str:
     if persistence_id < 1024:
@@ -190,13 +197,16 @@ def example_calculate_s3_object_key(database, client, persistence_id: int, objec
     else:
         return "mktv/%d.bin" % (object_id)
 
+
 DataStoreServer = MK8DataStoreServer(
     NEX_SETTINGS,
     s3_client=s3_client,
     s3_bucket="your_s3_bucket_name",
     datastore_db=datastore_collection,
     sequence_db=sequence_collection,
-    calculate_s3_object_key=example_calculate_s3_object_key, # Callback: Get object key by client, persistence id, object id
-    calculate_s3_object_key_ex=example_calculate_s3_object_key_ex # Callback: Get object key by PID, persistence id, object id
+    calculate_s3_object_key=example_calculate_s3_object_key,
+    # Callback: Get object key by client, persistence id, object id
+    calculate_s3_object_key_ex=example_calculate_s3_object_key_ex
+    # Callback: Get object key by PID, persistence id, object id
 )
 ```

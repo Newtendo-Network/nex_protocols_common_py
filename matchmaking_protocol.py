@@ -1,23 +1,19 @@
 from nintendo.nex import rmc, matchmaking, common
-from pymongo.collection import Collection
 
 from . import matchmaking_utils
+from .context import Context
 from .matchmaking_utils import GatheringFlags
 
 
 class CommonMatchMakingServer(matchmaking.MatchMakingServer):
 
-    def __init__(self,
-                 settings,
-                 gatherings_db: Collection,
-                 sessions_db: Collection,
-                 sequence_db: Collection):
+    def __init__(self, context: Context):
         super().__init__()
-        self.settings = settings
+        self.context = context
 
-        self.gatherings_db = gatherings_db
-        self.sessions_db = sessions_db
-        self.sequence_db = sequence_db
+        self.gatherings_db = context.database["gatherings"]
+        self.sessions_db = context.database["sessions"]
+        self.sequence_db = context.database["sequence"]
 
     # ============= Utility functions  =============
 

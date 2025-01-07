@@ -1,30 +1,30 @@
+from datetime import datetime, timezone, timedelta
+from typing import Callable
+
+import pymongo
+from minio.datatypes import PostPolicy
 from nintendo.nex import datastore, rmc, common
 from pymongo.collection import Collection
-from typing import Callable
-import datetime
-import pymongo
-from minio import Minio
-from minio.datatypes import PostPolicy
+
+from nex_protocols_common_py.context import Context
 
 
 class CommonDataStoreServer(datastore.DataStoreServer):
     def __init__(self,
-                 settings,
-                 s3_client: Minio,
-                 s3_bucket: str,
-                 datastore_db: Collection,
-                 sequence_db: Collection,
+                 context: Context,
                  calculate_s3_object_key: Callable[[Collection, rmc.RMCClient, int, int], str],
                  calculate_s3_object_key_ex: Callable[[Collection, int, int, int], str]):
         super().__init__()
-        self.settings = settings
-        self.s3_client = s3_client
-        self.s3_bucket = s3_bucket
-        self.datastore_db = datastore_db
-        self.sequence_db = sequence_db
+
+        self.context = context
+        self.s3_client = context.s3_client
+        self.s3_bucket = context.s3_bucket
+
         self.calculate_s3_object_key = calculate_s3_object_key
         self.calculate_s3_object_key_ex = calculate_s3_object_key_ex
 
+        self.sequence_db = context.database["sequence"]
+        self.datastore_db = context.database["datastore"]
         self.datastore_db.delete_many({"is_validated": False})
 
     def get_next_datastore_object_id(self) -> int:
@@ -34,7 +34,15 @@ class CommonDataStoreServer(datastore.DataStoreServer):
 
         return obj_id
 
-    def validate_prepare_post_param(self, client, param: datastore.DataStorePreparePostParam):
+    @staticmethod
+    def validate_prepare_post_param(param: datastore.DataStorePreparePostParam):
+        if param.size > (16 * 1024 * 1024):
+            raise common.RMCError("DataStore::InvalidArgument")
+
+        return True
+
+    @staticmethod
+    def validate_prepare_update_param(param: datastore.DataStorePrepareUpdateParam):
         if param.size > (16 * 1024 * 1024):
             raise common.RMCError("DataStore::InvalidArgument")
 
@@ -42,9 +50,10 @@ class CommonDataStoreServer(datastore.DataStoreServer):
 
     # ==================================================================================
 
-    async def prepare_post_object(self, client, param: datastore.DataStorePreparePostParam) -> datastore.DataStoreReqPostInfo:
+    async def prepare_post_object(self, client,
+                                  param: datastore.DataStorePreparePostParam) -> datastore.DataStoreReqPostInfo:
 
-        self.validate_prepare_post_param(client, param)
+        self.validate_prepare_post_param(param)
 
         doc = {
             "id": self.get_next_datastore_object_id(),
@@ -68,10 +77,10 @@ class CommonDataStoreServer(datastore.DataStoreServer):
             },
             "tmp_persistence_id": param.persistence_init_param.persistence_id,
             "is_validated": False,
-            "create_time": datetime.datetime.utcnow(),
-            "update_time": datetime.datetime.utcnow(),
-            "referred_time": datetime.datetime.utcnow(),
-            "expire_time": datetime.datetime(9999, 12, 31),
+            "create_time": datetime.now(timezone.utc),
+            "update_time": datetime.now(timezone.utc),
+            "referred_time": datetime.now(timezone.utc),
+            "expire_time": datetime(9999, 12, 31),
         }
 
         ratings = []
@@ -92,8 +101,9 @@ class CommonDataStoreServer(datastore.DataStoreServer):
 
         self.datastore_db.insert_one(doc)
 
-        key = self.calculate_s3_object_key(self.datastore_db, client, param.persistence_init_param.persistence_id, doc["id"])
-        policy = PostPolicy(self.s3_bucket, datetime.datetime.utcnow() + datetime.timedelta(minutes=15))
+        key = self.calculate_s3_object_key(self.datastore_db, client, param.persistence_init_param.persistence_id,
+                                           doc["id"])
+        policy = PostPolicy(self.s3_bucket, datetime.now(timezone.utc) + timedelta(minutes=15))
         policy.add_equals_condition("key", key)
         policy.add_content_length_range_condition(param.size, param.size)
         form = self.s3_client.presigned_post_policy(policy)
@@ -123,7 +133,8 @@ class CommonDataStoreServer(datastore.DataStoreServer):
                 try:
                     response = self.s3_client.stat_object(self.s3_bucket, key)
                     if response.size != 0:
-                        self.datastore_db.delete_many({"owner": client.pid(), "persistence_id": persistence_id, "data_id": {"$ne": param.data_id}})
+                        self.datastore_db.delete_many({"owner": client.pid(), "persistence_id": persistence_id,
+                                                       "data_id": {"$ne": param.data_id}})
                         self.datastore_db.update_one(
                             {"id": param.data_id},
                             {
@@ -139,6 +150,8 @@ class CommonDataStoreServer(datastore.DataStoreServer):
 
     async def prepare_update_object(self, client, param: datastore.DataStorePrepareUpdateParam):
 
+        self.validate_prepare_update_param(param)
+
         obj = self.datastore_db.find_one({"id": param.data_id})
         if not obj:
             raise common.RMCError("DataStore::NotFound")
@@ -146,26 +159,28 @@ class CommonDataStoreServer(datastore.DataStoreServer):
         if client.pid() != obj["owner"]:
             raise common.RMCError("DataStore::PermissionDenied")
 
-        s3_key = self.calculate_s3_object_key(self.datastore_db, client, obj["persistence_id"], param.data_id)
-        response = self.s3_client.generate_presigned_post(Bucket=self.s3_bucket,
-                                                          Key=s3_key,
-                                                          ExpiresIn=(15 * 60),
-                                                          Conditions=[["content-length-range", param.size, param.size]])
+        key = self.calculate_s3_object_key(self.datastore_db, client, obj["persistence_id"], param.data_id)
+        policy = PostPolicy(self.s3_bucket, datetime.now(timezone.utc) + timedelta(minutes=15))
+        policy.add_equals_condition("key", key)
+        policy.add_content_length_range_condition(param.size, param.size)
+        form = self.s3_client.presigned_post_policy(policy)
+        form["key"] = key
 
         res = datastore.DataStoreReqUpdateInfo()
-        res.url = response["url"]
+        res.url = self.s3_client._base_url._url.geturl() + "/" + self.s3_bucket
         res.form = []
         res.headers = []
         res.root_ca_cert = b""
         res.version = 2
 
-        for key, value in response["fields"].items():
+        for key, value in form.items():
             field = datastore.DataStoreKeyValue()
             field.key = key
             field.value = value
             res.form.append(field)
 
-        self.datastore_db.update_one({"id": param.data_id}, {"$set": {"is_validated": False, "update_size": param.size}})
+        self.datastore_db.update_one({"id": param.data_id},
+                                     {"$set": {"is_validated": False, "update_size": param.size}})
 
         return res
 
@@ -178,13 +193,15 @@ class CommonDataStoreServer(datastore.DataStoreServer):
                 try:
                     response = self.s3_client.stat_object(self.s3_bucket, key)
                     if response.size != 0:
-                        self.datastore_db.update_one({"id": param.data_id}, {"$set": {"is_validated": True, "size": datastore_object["update_size"]}})
+                        self.datastore_db.update_one({"id": param.data_id}, {
+                            "$set": {"is_validated": True, "size": datastore_object["update_size"]}})
                 except:
                     raise common.RMCError("DataStore::NotFound")
             else:
                 raise common.RMCError("DataStore::PermissionDenied")
 
-    async def prepare_get_object(self, client, param: datastore.DataStorePrepareGetParam) -> datastore.DataStoreReqGetInfo:
+    async def prepare_get_object(self, client,
+                                 param: datastore.DataStorePrepareGetParam) -> datastore.DataStoreReqGetInfo:
         query = {}
         if param.persistence_target.owner_id:
             query.update({"owner": param.persistence_target.owner_id})
@@ -206,7 +223,7 @@ class CommonDataStoreServer(datastore.DataStoreServer):
             param.persistence_target.persistence_id,
             obj["id"])
 
-        url = self.s3_client.presigned_get_object(self.s3_bucket, key, datetime.timedelta(minutes=15))
+        url = self.s3_client.presigned_get_object(self.s3_bucket, key, timedelta(minutes=15))
 
         res = datastore.DataStoreReqGetInfo()
         res.url = url
@@ -263,10 +280,10 @@ class CommonDataStoreServer(datastore.DataStoreServer):
             meta.delete_permission.recipients = obj["delete_permission"]["recipients"]
             meta.delete_permission.recipients = obj["delete_permission"]["recipients"]
 
-            meta.create_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["create_time"]))
-            meta.update_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["update_time"]))
-            meta.referred_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["referred_time"]))
-            meta.expire_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["create_time"]))
+            meta.create_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["create_time"]))
+            meta.update_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["update_time"]))
+            meta.referred_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["referred_time"]))
+            meta.expire_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["create_time"]))
 
             for rating in obj["ratings"]:
                 rate = datastore.DataStoreRatingInfoWithSlot()
@@ -364,10 +381,10 @@ class CommonDataStoreServer(datastore.DataStoreServer):
             meta.delete_permission.recipients = obj["delete_permission"]["recipients"]
             meta.delete_permission.recipients = obj["delete_permission"]["recipients"]
 
-            meta.create_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["create_time"]))
-            meta.update_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["update_time"]))
-            meta.referred_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["referred_time"]))
-            meta.expire_time = common.DateTime.fromtimestamp(datetime.datetime.timestamp(obj["create_time"]))
+            meta.create_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["create_time"]))
+            meta.update_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["update_time"]))
+            meta.referred_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["referred_time"]))
+            meta.expire_time = common.DateTime.fromtimestamp(datetime.timestamp(obj["create_time"]))
 
             for rating in obj["ratings"]:
                 rate = datastore.DataStoreRatingInfoWithSlot()
@@ -386,7 +403,8 @@ class CommonDataStoreServer(datastore.DataStoreServer):
 
         return res
 
-    async def rate_object(self, client, target: datastore.DataStoreRatingTarget, param: datastore.DataStoreRateObjectParam, fetch_ratings: bool):
+    async def rate_object(self, client, target: datastore.DataStoreRatingTarget,
+                          param: datastore.DataStoreRateObjectParam, fetch_ratings: bool):
 
         obj = self.datastore_db.find_one({"id": target.data_id})
         if not obj:
@@ -431,7 +449,7 @@ class CommonDataStoreServer(datastore.DataStoreServer):
                 continue
 
             key = self.calculate_s3_object_key_ex(self.datastore_db, obj["owner"], obj["persistence_id"], obj["id"])
-            url = self.s3_client.presigned_get_object(self.s3_bucket, key, datetime.timedelta(minutes=15))
+            url = self.s3_client.presigned_get_object(self.s3_bucket, key, timedelta(minutes=15))
 
             info.url = url
             info.size = obj["size"]

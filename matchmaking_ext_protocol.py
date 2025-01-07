@@ -1,19 +1,17 @@
-from nintendo.nex import rmc, common, matchmaking
-from pymongo.collection import Collection
+from nintendo.nex import common, matchmaking
 
-from . import matchmaking_utils
+import matchmaking_utils
+from context import Context
 
 
 class CommonMatchMakingServerExt(matchmaking.MatchMakingServerExt):
     def __init__(self,
-                 settings,
-                 gatherings_db: Collection,
-                 sequence_db: Collection):
+                 context: Context):
 
         super().__init__()
-        self.settings = settings
-        self.gatherings_db = gatherings_db
-        self.sequence_db = sequence_db
+        self.context = context
+        self.gatherings_db = context.database["gatherings"]
+        self.sequence_db = context.database["sequence"]
 
     async def logout(self, client):
         gatherings = list(self.gatherings_db.find({"players": {"$in": [client.pid()]}}))

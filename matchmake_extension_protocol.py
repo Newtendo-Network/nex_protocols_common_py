@@ -1,9 +1,10 @@
-from nintendo.nex import rmc, common, matchmaking, streams, notification
-from pymongo.collection import Collection
 from typing import Callable
 
-from . import matchmaking_utils
-from .secure_connection_protocol import CommonSecureConnectionServer
+from nintendo.nex import rmc, common, matchmaking, streams, notification
+
+import matchmaking_utils
+from context import Context
+from secure_connection_protocol import CommonSecureConnectionServer
 
 
 class CommonMatchmakeExtensionServer(matchmaking.MatchmakeExtensionServer):
@@ -22,17 +23,15 @@ class CommonMatchmakeExtensionServer(matchmaking.MatchmakeExtensionServer):
         output.anydata(response)
 
     def __init__(self,
-                 settings,
-                 gatherings_db: Collection,
-                 sequence_db: Collection,
+                 context: Context,
                  get_friend_pids_func: Callable[[int], list[int]],
                  secure_connection_server: CommonSecureConnectionServer):
 
         super().__init__()
-        self.settings = settings
+        self.context = context
+        self.gatherings_db = context.database["gatherings"]
+        self.sequence_db = context.database["sequence"]
 
-        self.gatherings_db = gatherings_db
-        self.sequence_db = sequence_db
         self.get_friend_pids = get_friend_pids_func
         self.secure_connection_server = secure_connection_server
 
@@ -47,7 +46,7 @@ class CommonMatchmakeExtensionServer(matchmaking.MatchmakeExtensionServer):
     # ============= Utility functions  =============
 
     def can_user_join_gathering(self, client: rmc.RMCClient, gathering) -> bool:
-        if gathering["participation_policy"] == 98:  # Only WiiU friends can participate
+        if gathering["participation_policy"] == 98:  # Only WiiU friends can participate (MK8)
             friend_pids = self.get_friend_pids(gathering["owner"])
             return client.pid() in friend_pids
         return True
@@ -84,7 +83,8 @@ class CommonMatchmakeExtensionServer(matchmaking.MatchmakeExtensionServer):
 
         return response
 
-    async def auto_matchmake_with_search_criteria_postpone(self, client, search_criteria: list[matchmaking.MatchmakeSessionSearchCriteria], gathering, message):
+    async def auto_matchmake_with_search_criteria_postpone(self, client, search_criteria: list[
+        matchmaking.MatchmakeSessionSearchCriteria], gathering, message):
 
         if len(message) > 128:
             raise common.RMCError("Core::InvalidArgument")
@@ -168,7 +168,8 @@ class CommonMatchmakeExtensionServer(matchmaking.MatchmakeExtensionServer):
         created_gathering = matchmaking_utils.create_gathering(self.gatherings_db, self.sequence_db, client, res)
         created_gathering_doc = matchmaking_utils.gathering_type_to_document(created_gathering)
 
-        created_gathering_doc = matchmaking_utils.add_user_to_gathering_ex(self.gatherings_db, client, created_gathering_doc, "", 1)
+        created_gathering_doc = matchmaking_utils.add_user_to_gathering_ex(self.gatherings_db, client,
+                                                                           created_gathering_doc, "", 1)
         if len(param.additional_participants) > 0:
             matchmaking_utils.add_user_to_gathering_ex_by_pids(
                 self.gatherings_db, client, created_gathering_doc, param.join_message, param.additional_participants)
@@ -177,7 +178,7 @@ class CommonMatchmakeExtensionServer(matchmaking.MatchmakeExtensionServer):
         for pid in param.additional_participants:
             target_client = self.secure_connection_server.get_client_by_pid(pid)
             if target_client:
-                stream = streams.StreamOut(self.settings)
+                stream = streams.StreamOut(self.context.settings)
                 event = notification.NotificationEvent()
                 event.pid = client.pid()
                 event.type = 122000  # Switch gathering
@@ -185,7 +186,7 @@ class CommonMatchmakeExtensionServer(matchmaking.MatchmakeExtensionServer):
                 event.param2 = pid
                 stream.add(event)
                 message = rmc.RMCMessage.request(
-                    self.settings,
+                    self.context.settings,
                     notification.NotificationProtocol.PROTOCOL_ID,
                     notification.NotificationProtocol.METHOD_PROCESS_NOTIFICATION_EVENT,
                     0xffff0000 + client.call_id,

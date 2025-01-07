@@ -1,9 +1,10 @@
-
-from nintendo.nex import rmc, matchmaking, common, matchmaking_eagle, matchmaking_mk8d
-import bson
 import os
-from pymongo.collection import Collection
+from collections.abc import Mapping
 from typing import Callable
+
+import bson
+from nintendo.nex import rmc, matchmaking, common, matchmaking_eagle, matchmaking_mk8d
+from pymongo.collection import Collection
 
 
 class GatheringFlags:
@@ -12,7 +13,7 @@ class GatheringFlags:
     ALLOW_ZERO_PARTICIPANT = 0x80
     CAN_OWNERSHIP_BE_TAKEN_BY_PARTICIPANTS = 0x200
     SEND_NOTIFICATIONS_ON_PARTICIPATION = 0x400
-    SEND_NOTIFICATIONS_ON_PARTICIPATION = 0x800
+    SEND_NOTIFICATIONS_ON_PARTICIPATION_AND_NEW = 0x800
 
 
 def get_next_gid(col: Collection) -> int:
@@ -22,11 +23,13 @@ def get_next_gid(col: Collection) -> int:
 
     return gid
 
+
 # ============= Gathering functions  =============
 
 
 def is_object_gathering(obj) -> bool:
-    return (isinstance(obj, matchmaking.Gathering)) or (isinstance(obj, matchmaking_mk8d.Gathering)) or (isinstance(obj, matchmaking_eagle.Gathering))
+    return (isinstance(obj, matchmaking.Gathering)) or (isinstance(obj, matchmaking_mk8d.Gathering)) or (
+        isinstance(obj, matchmaking_eagle.Gathering))
 
 
 def gathering_to_document(obj: matchmaking.Gathering) -> dict:
@@ -78,11 +81,13 @@ def create_gathering_from_obj(client: rmc.RMCClient, gathering: matchmaking.Gath
 
     return res
 
+
 # ============= MatchmakeSession functions  =============
 
 
 def is_object_matchmake_session(obj) -> bool:
-    return (isinstance(obj, matchmaking.MatchmakeSession)) or (isinstance(obj, matchmaking_mk8d.MatchmakeSession)) or (isinstance(obj, matchmaking_eagle.MatchmakeSession))
+    return (isinstance(obj, matchmaking.MatchmakeSession)) or (isinstance(obj, matchmaking_mk8d.MatchmakeSession)) or (
+        isinstance(obj, matchmaking_eagle.MatchmakeSession))
 
 
 def matchmake_session_to_document(obj: matchmaking.MatchmakeSession) -> dict:
@@ -136,7 +141,8 @@ def matchmake_session_from_document(obj: dict) -> matchmaking.MatchmakeSession:
     return res
 
 
-def create_matchmake_session_from_obj(client: rmc.RMCClient, gathering: matchmaking.MatchmakeSession) -> matchmaking.MatchmakeSession:
+def create_matchmake_session_from_obj(client: rmc.RMCClient,
+                                      gathering: matchmaking.MatchmakeSession) -> matchmaking.MatchmakeSession:
     res = matchmaking.MatchmakeSession()
     res.owner = client.pid()
     res.host = client.pid()
@@ -165,11 +171,14 @@ def create_matchmake_session_from_obj(client: rmc.RMCClient, gathering: matchmak
 
     return res
 
+
 # ============= PersistentGathering functions  =============
 
 
 def is_object_persistent_gathering(obj) -> bool:
-    return (isinstance(obj, matchmaking.PersistentGathering)) or (isinstance(obj, matchmaking_mk8d.PersistentGathering)) or (isinstance(obj, matchmaking_eagle.PersistentGathering))
+    return (isinstance(obj, matchmaking.PersistentGathering)) or (
+        isinstance(obj, matchmaking_mk8d.PersistentGathering)) or (
+        isinstance(obj, matchmaking_eagle.PersistentGathering))
 
 
 def persistent_gathering_to_document(obj: matchmaking.PersistentGathering) -> dict:
@@ -204,7 +213,8 @@ def persistent_gathering_from_document(obj: dict) -> matchmaking.PersistentGathe
     return res
 
 
-def create_persistent_gathering_from_obj(client: rmc.RMCClient, gathering: matchmaking.PersistentGathering) -> matchmaking.PersistentGathering:
+def create_persistent_gathering_from_obj(client: rmc.RMCClient,
+                                         gathering: matchmaking.PersistentGathering) -> matchmaking.PersistentGathering:
     res = matchmaking.PersistentGathering()
     res.owner = client.pid()
     res.host = client.pid()
@@ -225,6 +235,7 @@ def create_persistent_gathering_from_obj(client: rmc.RMCClient, gathering: match
     res.num_participants = 0
 
     return res
+
 
 # ============= Generic functions  =============
 
@@ -260,7 +271,7 @@ def gathering_type_from_document(obj: dict):
     raise common.RMCError("Core::InvalidArgument")
 
 
-def create_gathering_type_from_document(client: rmc.RMCClient, obj: dict):
+def create_gathering_type_from_document(client: rmc.RMCClient, obj: any):
     if is_object_matchmake_session(obj):
         return create_matchmake_session_from_obj(client, obj)
     elif is_object_persistent_gathering(obj):
@@ -321,6 +332,7 @@ def verify_gathering_type(obj):
         if len(obj.codeword) > 64:
             raise common.RMCError("Core::InvalidArgument")
 
+
 # ============= Find / Create / Delete gatherings base functions  =============
 
 
@@ -328,7 +340,7 @@ def find_gathering(gatherings_db: Collection,
                    sequence_db: Collection,
                    client: rmc.RMCClient,
                    search_criteria: list[matchmaking.MatchmakeSessionSearchCriteria],
-                   gathering: matchmaking.Gathering,
+                   gathering: matchmaking.Gathering | matchmaking.MatchmakeSession,
                    limit: int,
                    add_extra_filters: Callable[[rmc.RMCClient, object], dict]) -> list:
     """
@@ -351,12 +363,12 @@ def find_gathering(gatherings_db: Collection,
 
     conditions = {"players": {"$nin": [client.pid()]}}
     conditions.update(add_extra_filters(client, gathering))
-    if (search_criteria) and (len(search_criteria) > 0):
+    if search_criteria and (len(search_criteria) > 0):
         # Matchmaking code with search criterias
         for sc in search_criteria:
             num_players = sc.vacant_participants
 
-            conditions.update({"type": "MatchmakeSession", "game_mode": gathering.game_mode})
+            conditions.update({"type": "MatchmakeSession", "game_mode": int(sc.game_mode)})
             if sc.game_mode != "":
                 conditions.update({"game_mode": int(sc.game_mode)})
 
@@ -377,7 +389,8 @@ def find_gathering(gatherings_db: Collection,
                     conditions.update({"max_participants": int(sc.max_participants)})
 
             # Make sure there's enough place for the number of players specified by the SearchCriteria
-            conditions.update({"$expr": {"$gte": ["$max_participants", {"$add": [{"$size": "$players"}, num_players]}]}})
+            conditions.update(
+                {"$expr": {"$gte": ["$max_participants", {"$add": [{"$size": "$players"}, num_players]}]}})
 
             res = gatherings_db.find(conditions).limit(limit)
             res_list += list(map(gathering_type_from_document, res))
@@ -415,6 +428,7 @@ def create_gathering(gatherings_db: Collection,
 
     Args:
         gatherings_db (Collection): The MongoDB collection where the gatherings are stored
+        sequence_db (Collection): The MongoDB collection where the sequence IDs are stored (auto-increment)
         client (rmc.RMCClient): The caller client
         gathering (Gathering | MatchmakeSession | PersistentGathering): Base gathering sent by the client with the default settings
 
@@ -455,10 +469,12 @@ def delete_gathering_for_client(gatherings_db: Collection, client: rmc.RMCClient
 
     gatherings_db.delete_one({"id": gid})
 
+
 # ============= Add / Remove in gatherings functions  =============
 
 
-def add_user_to_gathering(gatherings_db: Collection, client: rmc.RMCClient, gid: int, message: str, num_added: int = 1) -> dict:
+def add_user_to_gathering(gatherings_db: Collection, client: rmc.RMCClient, gid: int, message: str,
+                          num_added: int = 1) -> Mapping[str, any]:
     """
     Add a client to a gathering (fetched by ID)
 
@@ -473,7 +489,7 @@ def add_user_to_gathering(gatherings_db: Collection, client: rmc.RMCClient, gid:
         dict: The gathering with the changes applied to it
 
     Raises:
-        RendezVous::SessionVoid: The session with the specified Gathering ID doesn't exists
+        RendezVous::SessionVoid: The session with the specified Gathering ID doesn't exist
         RendezVous::SessionFull: The session is full and cannot be joined with the specified amount of players
         RendezVous::AlreadyParticipatedGathering: The client is already participating in the Gathering
     """
@@ -484,7 +500,8 @@ def add_user_to_gathering(gatherings_db: Collection, client: rmc.RMCClient, gid:
     return add_user_to_gathering_ex(gatherings_db, client, gathering, message, num_added)
 
 
-def add_user_to_gathering_ex(gatherings_db: Collection, client: rmc.RMCClient, gathering: dict, message: str, num_added: int = 1) -> dict:
+def add_user_to_gathering_ex(gatherings_db: Collection, client: rmc.RMCClient, gathering: Mapping[str, any],
+                             message: str, num_added: int = 1) -> Mapping[str, any]:
     """
     Add a user to the gathering (represented by a collection document)
 
@@ -499,7 +516,7 @@ def add_user_to_gathering_ex(gatherings_db: Collection, client: rmc.RMCClient, g
         dict: The gathering with the changes applied to it
 
     Raises:
-        RendezVous::SessionVoid: The session with the specified Gathering ID doesn't exists
+        RendezVous::SessionVoid: The session with the specified Gathering ID doesn't exist
         RendezVous::SessionFull: The session is full and cannot be joined with the specified amount of players
         RendezVous::AlreadyParticipatedGathering: The client is already participating in the Gathering
     """
@@ -528,7 +545,8 @@ def add_user_to_gathering_ex(gatherings_db: Collection, client: rmc.RMCClient, g
     return gathering
 
 
-def add_user_to_gathering_ex_by_pids(gatherings_db: Collection, client: rmc.RMCClient, gathering: dict, message: str, pids: list[int]) -> dict:
+def add_user_to_gathering_ex_by_pids(gatherings_db: Collection, client: rmc.RMCClient, gathering: Mapping[str, any], message: str,
+                                     pids: list[int]) -> Mapping[str, any]:
     """
     Add users (by PID) to the gathering (represented by a collection document)
 
@@ -543,7 +561,7 @@ def add_user_to_gathering_ex_by_pids(gatherings_db: Collection, client: rmc.RMCC
         dict: The gathering with the changes applied to it
 
     Raises:
-        RendezVous::SessionVoid: The session with the specified Gathering ID doesn't exists
+        RendezVous::SessionVoid: The session with the specified Gathering ID doesn't exist
         RendezVous::SessionFull: The session is full and cannot be joined with the specified amount of players
     """
     num_added = len(pids)
@@ -566,7 +584,8 @@ def add_user_to_gathering_ex_by_pids(gatherings_db: Collection, client: rmc.RMCC
     return gathering
 
 
-def remove_user_from_gathering(gatherings_db: Collection, client: rmc.RMCClient, gid: int, message: str) -> dict:
+def remove_user_from_gathering(gatherings_db: Collection, client: rmc.RMCClient, gid: int, message: str) -> Mapping[
+    str, any]:
     """
     Remove a user from the Gathering (specified by ID)
 
@@ -609,7 +628,8 @@ def remove_user_from_gathering(gatherings_db: Collection, client: rmc.RMCClient,
     return gathering
 
 
-def remove_user_from_gathering_ex(gatherings_db: Collection, client: rmc.RMCClient, gathering: dict, message: str) -> dict:
+def remove_user_from_gathering_ex(gatherings_db: Collection, client: rmc.RMCClient, gathering: dict,
+                                  message: str) -> dict:
     """
     Remove a user from the Gathering (specified by an exisiting Gathering document)
 
@@ -646,7 +666,7 @@ def remove_user_from_gathering_ex(gatherings_db: Collection, client: rmc.RMCClie
     return gathering
 
 
-def handle_gathering_player_removal(gatherings_db: Collection, client: rmc.RMCClient, gathering: dict):
+def handle_gathering_player_removal(gatherings_db: Collection, client: rmc.RMCClient, gathering: Mapping[str, any]):
     if gathering["type"] == "PersistentGathering":
         if len(gathering["players"]) == 0:
             if gathering["flags"] & GatheringFlags.ALLOW_ZERO_PARTICIPANT:

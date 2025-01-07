@@ -1,20 +1,19 @@
-from nintendo.nex import rmc, secure, common
-from pymongo.collection import Collection
-from anyio import Lock
+from datetime import timezone, datetime
+
 import bson
-import datetime
+from anyio import Lock
+from nintendo.nex import rmc, secure, common
+
+from nex_protocols_common_py.context import Context
 
 
 class CommonSecureConnectionServer(secure.SecureConnectionServer):
-    def __init__(self,
-                 settings,
-                 sessions_db: Collection,
-                 reportdata_db: Collection):
+    def __init__(self, context: Context):
 
         super().__init__()
-        self.settings = settings
-        self.sessions_db = sessions_db
-        self.reportdata_db = reportdata_db
+        self.context = context
+        self.sessions_db = context.database["sessions"]
+        self.reportdata_db = context.database["reportdata"]
 
         self.connection_id_counter = 1
         self.connection_id_lock = Lock()
@@ -26,7 +25,7 @@ class CommonSecureConnectionServer(secure.SecureConnectionServer):
         print("Removing disconnected player %d session ... (RVCID %d)" % (client.pid(), client.client.user_cid))
         self.sessions_db.delete_one({"cid": client.client.user_cid})
 
-    def get_client_by_cid(self, cid: int) -> rmc.RMCClient:
+    def get_client_by_cid(self, cid: int) -> rmc.RMCClient | None:
         return self.clients.get(cid, None)
 
     def get_client_by_pid(self, pid: int) -> rmc.RMCClient:
@@ -40,7 +39,8 @@ class CommonSecureConnectionServer(secure.SecureConnectionServer):
     def get_current_session_for_pid(self, pid: int):
         return self.sessions_db.find_one({"pid": pid})
 
-    def transform_urls(self, urls: list[common.StationURL]) -> list[str]:
+    @staticmethod
+    def transform_urls(urls: list[common.StationURL]) -> list[str]:
         return list(map(str, urls))
 
     def set_session_for_pid(self, pid: int, urls: list[common.StationURL], cid: int, addr: tuple[str, int]):
@@ -64,7 +64,7 @@ class CommonSecureConnectionServer(secure.SecureConnectionServer):
             old_array: list[str] = session["urls"]
             for i in range(len(old_array)):
                 if old_array[i] == url:
-                    new_array.append(url)
+                    new_array.append(new)
                 else:
                     new_array.append(old_array[i])
 
@@ -140,6 +140,6 @@ class CommonSecureConnectionServer(secure.SecureConnectionServer):
                 "report_id": report_id,
                 "report_data": bson.Binary(report_data),
                 "report_size": len(report_data),
-                "report_date": datetime.datetime.utcnow()
+                "report_date": datetime.now(timezone.utc)
             }
         }, upsert=True)

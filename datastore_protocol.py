@@ -132,7 +132,9 @@ class CommonDataStoreServer(datastore.DataStoreServer):
                                     "persistence_id": persistence_id
                                 }
                             })
-                except:
+                except Exception as e:
+                    print(type(e), e)
+                    self.datastore_db.delete_many({"id": param.data_id})
                     raise common.RMCError("DataStore::NotFound")
             else:
                 raise common.RMCError("DataStore::PermissionDenied")
@@ -147,24 +149,24 @@ class CommonDataStoreServer(datastore.DataStoreServer):
             raise common.RMCError("DataStore::PermissionDenied")
 
         s3_key = self.calculate_s3_object_key(self.datastore_db, client, obj["persistence_id"], param.data_id)
-        response = self.s3_client.generate_presigned_post(Bucket=self.s3_bucket,
-                                                          Key=s3_key,
-                                                          ExpiresIn=(15 * 60),
-                                                          Conditions=[["content-length-range", param.size, param.size]])
+        policy = PostPolicy(self.s3_bucket, datetime.datetime.utcnow() + datetime.timedelta(minutes=15))
+        policy.add_equals_condition("key", s3_key)
+        policy.add_content_length_range_condition(param.size, param.size)
+        form = self.s3_client.presigned_post_policy(policy)
+        form["key"] = s3_key
 
         res = datastore.DataStoreReqUpdateInfo()
-        res.url = response["url"]
+        res.url = self.s3_client._base_url._url.geturl() + "/" + self.s3_bucket
         res.form = []
         res.headers = []
         res.root_ca_cert = b""
         res.version = 2
 
-        for key, value in response["fields"].items():
+        for key, value in form.items():
             field = datastore.DataStoreKeyValue()
             field.key = key
             field.value = value
             res.form.append(field)
-
         self.datastore_db.update_one({"id": param.data_id}, {"$set": {"is_validated": False, "update_size": param.size}})
 
         return res

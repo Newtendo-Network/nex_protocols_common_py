@@ -37,6 +37,10 @@ class RankingManager:
             return sum
         """)
 
+        # rks = list(self.rankings_db.find({}))
+        # for rk in rks:
+        #     self.set_score_for_pid_ex(rk["pid"], rk, 0, True)
+
     def get_redis_member_name(self, category: int, unique: bool = False):
         if unique:
             return "leaderboard_unique:%d" % category
@@ -96,6 +100,33 @@ class RankingManager:
         pipeline = self.redis_db.pipeline()
         pipeline.zadd(self.get_redis_member_name(score_data.category), {str(insert_result.inserted_id): score_data.score})
         pipeline.zadd(self.get_redis_member_name(score_data.category, True), {str(score_data.score): 1}, incr=True)
+
+        pipeline.execute()
+
+    def set_score_for_pid_ex(self, pid: int, score_data: dict, unique_id: int, replace_all: bool = True):
+        """Insert a user score in the database based on PID (MongoDB and Redis)
+
+        Args:
+            pid (int): The score owner
+            score_data (dict): The ranking database entry
+            unique_id (int): Unique ID (unused.)
+            replace_all (bool, optional): Delete all previous scores. Defaults to True.
+        """
+
+        if replace_all:
+            self.delete_scores(pid, score_data["category"])
+
+        insert_result = self.rankings_db.insert_one({
+            "pid": pid,
+            "category": score_data["category"],
+            "score": score_data["score"],
+            "groups": score_data["groups"],
+            "insert_time": score_data["insert_time"]
+        })
+
+        pipeline = self.redis_db.pipeline()
+        pipeline.zadd(self.get_redis_member_name(score_data["category"]), {str(insert_result.inserted_id): score_data["score"]})
+        pipeline.zadd(self.get_redis_member_name(score_data["category"], True), {str(score_data["score"]): 1}, incr=True)
 
         pipeline.execute()
 

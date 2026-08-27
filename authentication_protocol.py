@@ -63,7 +63,8 @@ class CommonAuthenticationServer(authentication.AuthenticationServer):
         try:
             password = self.get_nex_password_func(pid)
             return AuthenticationUser(pid, str(pid), password)
-        except:
+        except Exception as e:
+            print(e)
             pass
 
     # ============= Method implementations  =============
